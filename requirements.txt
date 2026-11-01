@@ -1,0 +1,7 @@
+pybullet>=3.2.5
+numpy<2; python_version < "3.13"   # pybullet wheels are built against numpy 1.x
+numpy; python_version >= "3.13"
+matplotlib
+torch>=2.1
+gymnasium>=0.29
+stable-baselines3>=2.2

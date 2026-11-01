@@ -26,3 +26,8 @@ Jacobain and Dynamic quantities such as the gravity vector, or mass-inertia matr
 
 A basic example showing how to use the model and state to obtain torques to apply on the joints, as well as how to apply them,
 is shown in the [control_demo.py](scripts/control_demo.py)
+
+## Control methods (report project)
+Computed torque, Cartesian impedance, a Lagrangian neural network controller and a PPO
+peg-in-hole policy, plus the validation experiments and Slurm training scripts, live in
+`cmr_control/`, `experiments/` and `slurm/`. See [CONTROLLERS.md](CONTROLLERS.md).

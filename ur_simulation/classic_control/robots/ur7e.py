@@ -40,11 +40,17 @@ class UR7e:
         n_substeps: int = 1,
         step_frequency: int = 1000,
         interactive_gui: bool = False,
+        render_mode: str = "human",
+        urdf_path: Optional[str] = None,
     ) -> None:
+        # render_mode="rgb_array" runs headless (pybullet DIRECT), e.g. on a Slurm node.
+        # urdf_path overrides the bundled URDF (used to attach a peg / payload to tool0).
         base_position = base_position if base_position is not None else np.zeros(3)
         self.block_gripper = block_gripper
 
-        if block_gripper:
+        if urdf_path is not None:
+            urdf = Path(urdf_path)
+        elif block_gripper:
             urdf = Path(files("ur_simulation.assets")) / "urdf" / "ur7e.urdf"
         else:
             urdf = Path(files("ur_simulation.assets")) / "urdf" / "ur7e_hande.urdf"
@@ -56,7 +62,8 @@ class UR7e:
         self.neutral_joint_values = self.NEUTRAL_JOINTS if neutral_joints is None else neutral_joints
         self.ee_link = self.EE_LINK
 
-        self.sim = PyBullet(n_substeps=n_substeps, step_frequency=step_frequency, interactive_gui=interactive_gui)
+        self.sim = PyBullet(render_mode=render_mode, n_substeps=n_substeps, step_frequency=step_frequency,
+                            interactive_gui=interactive_gui)
         self.body_name = "ur7e"
         with self.sim.no_rendering():
             self._load_robot(urdf.as_posix(), base_position)
