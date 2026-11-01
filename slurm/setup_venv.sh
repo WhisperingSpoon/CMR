@@ -8,7 +8,7 @@ set -euo pipefail
 # module load Python/3.11.5-GCCcore-13.2.0         # <-- same module as in env.sh
 python3 -m venv "$CMR_VENV"
 source "$CMR_VENV/bin/activate"
-pip install --upgrade pip
+pip install --upgrade pip setuptools wheel
 pip install -r requirements.txt
 pip install -e .
-python -c "import pybullet, torch, stable_baselines3; print('ok', torch.__version__, torch.cuda.is_available())"
+python -c "import cmr_control, ur_simulation, pybullet, torch, stable_baselines3; print('ok', torch.__version__, torch.cuda.is_available())"

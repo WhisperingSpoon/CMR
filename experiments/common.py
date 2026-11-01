@@ -6,9 +6,17 @@ import json
 import os
 from pathlib import Path
 
+import sys
+
 import numpy as np
 
-from cmr_control.dynamics import RigidBodyModel
+# Make the repository importable even if `pip install -e .` was skipped or failed
+# (e.g. a cluster venv): cmr_control and ur_simulation live in the repo root.
+_REPO = Path(__file__).resolve().parents[1]
+if str(_REPO) not in sys.path:
+    sys.path.insert(0, str(_REPO))
+
+from cmr_control.dynamics import RigidBodyModel  # noqa: E402
 from cmr_control.learning.peg_env import QUAT_DOWN
 from cmr_control.sim import Q_HOME
 from cmr_control.trajectories import MultiSine, QuinticWaypoints, min_link_height

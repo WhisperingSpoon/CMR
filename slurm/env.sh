@@ -18,6 +18,7 @@ module purge 2>/dev/null || true
 # module load Python/3.11.5-GCCcore-13.2.0         # <-- uncomment / adapt
 source "$CMR_VENV/bin/activate"
 cd "$CMR_ROOT"
+export PYTHONPATH="$CMR_ROOT${PYTHONPATH:+:$PYTHONPATH}"   # repo packages importable without pip install -e
 
 # one thread per process: parallelism comes from Slurm tasks / SubprocVecEnv
 export OMP_NUM_THREADS=1 MKL_NUM_THREADS=1
