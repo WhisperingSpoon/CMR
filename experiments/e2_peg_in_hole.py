@@ -47,11 +47,13 @@ def main():
     ap.add_argument("--n-shards", type=int, default=1)
     ap.add_argument("--out", type=Path, default=RESULTS / "e2")
     ap.add_argument("--gui", action="store_true")
+    ap.add_argument("--slowmo", type=float, default=1.0, help="with --gui: play N times slower than real time")
     args = ap.parse_args()
     args.out.mkdir(parents=True, exist_ok=True)
     (args.out / "logs").mkdir(exist_ok=True)
 
     env = PegInHoleEnv(gui=args.gui)   # plant first (pybullet client 0)
+    env.plant.slowmo = args.slowmo
     model = RigidBodyModel(tool="peg", link_mass_scale=args.model_mass_scale)
 
     policy = None

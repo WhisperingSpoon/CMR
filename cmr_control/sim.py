@@ -101,6 +101,8 @@ class Plant:
             self.sim.create_plane(0.0)
         self.last_tau = np.zeros(6)
         self.realtime = gui  # sleep dt per step when watching in the GUI
+        self.slowmo = 1.0    # >1 slows the GUI down further (e.g. 5 = five times slower)
+        self.on_step = None  # optional callback f(plant) after every physics step (snapshots)
 
     # ------------------------------------------------------------------ state
     def q(self) -> np.ndarray:
@@ -145,7 +147,9 @@ class Plant:
             self.pc.stepSimulation()
         self.t += n * self.dt
         if self.realtime:
-            time.sleep(n * self.dt)
+            time.sleep(n * self.dt * self.slowmo)
+        if self.on_step is not None:
+            self.on_step(self)
 
     def close(self):
         self.sim.close()
