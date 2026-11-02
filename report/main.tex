@@ -1,0 +1,294 @@
+\documentclass[conference]{IEEEtran}
+\IEEEoverridecommandlockouts
+
+\usepackage{amsmath,amssymb,amsfonts}
+\usepackage{graphicx}
+\usepackage{booktabs}
+\usepackage{multirow}
+\usepackage{xcolor}
+\usepackage{url}
+\usepackage{cite}
+\usepackage[hidelinks]{hyperref}
+
+% Figures are read from the repository's results folder (produced by experiments/plot_results.py).
+% If a figure is missing, a placeholder box of the same size is drawn so the paper still compiles.
+\graphicspath{{../results/figures/}{figures/}}
+\newcommand{\fig}[2]{\IfFileExists{../results/figures/#1.pdf}{\includegraphics[width=#2]{#1}}%
+  {\IfFileExists{figures/#1.pdf}{\includegraphics[width=#2]{#1}}%
+  {\fbox{\parbox[c][0.45#2][c]{0.95#2}{\centering\footnotesize missing figure: \texttt{\detokenize{#1}.pdf}}}}}}
+\newcommand{\todo}[1]{\textcolor{red}{[TODO: #1]}}
+
+\newcommand{\bq}{\boldsymbol{q}}
+\newcommand{\dq}{\dot{\boldsymbol{q}}}
+\newcommand{\ddq}{\ddot{\boldsymbol{q}}}
+\newcommand{\btau}{\boldsymbol{\tau}}
+\newcommand{\bx}{\boldsymbol{x}}
+\newcommand{\be}{\boldsymbol{e}}
+\newcommand{\bM}{\boldsymbol{M}}
+\newcommand{\bJ}{\boldsymbol{J}}
+\newcommand{\bK}{\boldsymbol{K}}
+\newcommand{\bD}{\boldsymbol{D}}
+\newcommand{\bF}{\boldsymbol{F}}
+\newcommand{\bc}{\boldsymbol{c}}
+\newcommand{\bC}{\boldsymbol{C}}
+\newcommand{\bg}{\boldsymbol{g}}
+
+\begin{document}
+
+\title{Model-Based versus Model-Free Control of a UR7e Manipulator in Free Motion and Peg-in-Hole Insertion}
+
+\author{\IEEEauthorblockN{Brad Robertson}
+\IEEEauthorblockA{\textit{Bernoulli Institute, University of Groningen}\\
+Student no.\ s3561801\\
+Control Methods for Robotics (WMAI037-05)}
+% \todo{add team members, if any}
+}
+
+\maketitle
+
+\begin{abstract}
+We implement and compare four controllers for a simulated 6-DoF Universal Robots UR7e: a model-based and a model-free controller for free motion, and a model-based and a model-free controller for contact with the environment. For free motion, computed-torque control using the rigid-body model is compared with a physics-informed Lagrangian neural network (LNN) that learns the dynamics from motion data and is used in the tracking law of Liu~\emph{et al.} For contact, Cartesian impedance control is compared with a proximal policy optimization (PPO) policy on a chamfered peg-in-hole task with unknown hole-position error. With an exact model, computed torque tracks to below 0.1\,mm; the LNN, which never accesses the robot model, reaches 0.15--0.93\,mm, 30--170 times better than PD control with identical gains. Under an unmodelled 2\,kg payload both degrade to 14--20\,mm. In peg-in-hole, impedance control succeeds in 97--100\% of trials with the lowest contact forces as long as the error lies within the chamfer, but fails beyond it, whereas PPO still succeeds in 70\% and 53\% of trials at 5 and 6\,mm, at the cost of higher contact forces and three hours of training.
+\end{abstract}
+
+\begin{IEEEkeywords}
+computed torque, impedance control, Lagrangian neural networks, reinforcement learning, peg-in-hole
+\end{IEEEkeywords}
+
+% =====================================================================================
+\section{Introduction}
+Model-based controllers exploit an analytical model of the manipulator dynamics to cancel nonlinearities and to shape the closed-loop behaviour~\cite{siciliano2009,spong2006}. Their performance is excellent when the model is exact, but degrades when it is not, for example with an unknown payload. Model-free approaches avoid the analytical model: they either \emph{learn} a model from data, as physics-informed neural networks do~\cite{raissi2019,lutter2019delan,lutter2023,liu2024}, or learn a control policy directly by interacting with the environment~\cite{schulman2017,shahid2022}.
+
+This paper implements four controllers from the course~\cite{carloni2026} on a simulated UR7e and evaluates them in two designed experiments:
+\begin{itemize}
+\item \textbf{Free motion, model-based:} computed-torque (inverse dynamics) control~\cite{siciliano2009}.
+\item \textbf{Free motion, model-free:} a Lagrangian neural network with the tracking controller of Liu~\emph{et al.}~\cite{liu2024}.
+\item \textbf{Contact, model-based:} Cartesian impedance control~\cite{hogan1985,khatib1987,ott2008}.
+\item \textbf{Contact, model-free:} a PPO policy~\cite{schulman2017,shahid2022} for peg-in-hole insertion.
+\end{itemize}
+The experiments test each pair under the conditions where the two paradigms are expected to differ: model error and out-of-distribution trajectories in free motion (E1), and uncertainty in the position of the environment in contact (E2). Table~\ref{tab:attribution} states which methods and software are taken from the literature and which parts are our own.
+
+\begin{table}[t]
+\caption{Origin of methods and software}
+\label{tab:attribution}
+\centering\footnotesize
+\setlength{\tabcolsep}{3pt}
+\begin{tabular}{p{0.37\columnwidth}p{0.27\columnwidth}p{0.28\columnwidth}}
+\toprule
+Component & Taken from & Our contribution \\
+\midrule
+Simulator, UR7e URDF & PyBullet~\cite{pybullet}, course package~\cite{moret2026} & headless mode, tool URDFs, inertia fix (Sec.~\ref{sec:system}) \\
+Computed torque, quintic trajectories, DLS IK, quaternion error & \cite{siciliano2009,carloni2026} & gain choice, experiments \\
+Cartesian impedance & \cite{hogan1985,khatib1987,ott2008,carloni2026} & $\bM_d=\hat{\bM}_x$ variant, insertion strategy \\
+Lagrangian NN, Cholesky mass matrix & \cite{lutter2019delan,lutter2023,cranmer2020} & -- \\
+Damping network, RK4 loss, tracking law & \cite{liu2024} & PyTorch~\cite{paszke2019} re-implementation, $A=I$, loss normalisation \\
+PPO & \cite{schulman2017,shahid2022}; Stable-Baselines3~\cite{raffin2021}, Gymnasium~\cite{towers2024} & environment, observation and reward design \\
+Peg-in-hole fixture, protocols, metrics & -- & ours \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+% =====================================================================================
+\section{System and Simulation}\label{sec:system}
+The UR7e is simulated in PyBullet~\cite{pybullet} with the course package~\cite{moret2026}. All six joints are torque controlled at 1\,kHz, with saturation at $[150,150,150,28,28,28]$\,Nm. The joint-space dynamics are
+\begin{equation}
+\bM(\bq)\ddq + \bC(\bq,\dq)\dq + \bD\dq + \bg(\bq) = \btau + \bJ^T(\bq)\bF_c,
+\label{eq:dyn}
+\end{equation}
+with $\bD=\boldsymbol{0}$ in simulation (joint damping disabled) and $\bF_c$ the contact wrench applied by the environment~\cite{carloni2026}. We write $\bc(\bq,\dq)=\bC(\bq,\dq)\dq$.
+
+\emph{Plant and model.} The plant is ground truth. Model-based controllers query a separate PyBullet instance loaded from a \emph{nominal} URDF, never the plant itself. This makes model-error experiments possible (Sec.~\ref{sec:design}). With identical URDFs, the model reproduces the plant accelerations to machine precision. Model-free controllers use no dynamics model at all.
+
+\emph{Phantom inertia.} PyBullet assigns 1\,kg and unit inertia to every URDF link without an \texttt{<inertial>} tag. The course URDF has three such frames on the wrist (\texttt{ft\_frame}, \texttt{flange}, \texttt{tool0}), i.e.\ a 3\,kg phantom payload at the tool. We give these frames negligible inertia.
+
+\emph{Sampled-data gain limit.} The wrist-3 joint inertia is only $M_{66}\approx4.3\cdot10^{-4}$\,kg\,m$^2$. With explicit torque feedback sampled at $\Delta t=1$\,ms, a derivative gain $K_{d,i}$ is stable only if $K_{d,i}\Delta t/M_{ii}<2$. All joint gains below satisfy $K_{d,i}\Delta t/M_{ii}\le0.5$. The model-free PD gains used throughout are $\bK_P=\mathrm{diag}(600,900,600,60,30,4)$\,Nm/rad and $\bK_D=\mathrm{diag}(60,90,50,4,1.5,0.15)$\,Nm\,s/rad.
+
+% =====================================================================================
+\section{Methods}\label{sec:methods}
+
+\subsection{Computed-torque control (model-based, free motion)}
+Inverse dynamics control~\cite[Sec.~8.5.2]{siciliano2009},\cite{carloni2026} cancels the nonlinear dynamics with the model $(\hat{\bM},\hat{\bc},\hat{\bg})$ and imposes linear error dynamics through the new input $\boldsymbol{y}$:
+\begin{align}
+\btau &= \hat{\bM}(\bq)\boldsymbol{y} + \hat{\bc}(\bq,\dq) + \hat{\bg}(\bq),\\
+\boldsymbol{y} &= \ddq_d + \bK_d(\dq_d-\dq) + \bK_p(\bq_d-\bq).
+\end{align}
+With an exact model, the tracking error $\be=\bq_d-\bq$ obeys $\ddot{\be}+\bK_d\dot{\be}+\bK_p\be=\boldsymbol{0}$. We choose $\bK_p=\omega^2\boldsymbol{I}$ and $\bK_d=2\zeta\omega\boldsymbol{I}$, with $\omega=25$\,rad/s and $\zeta=1$ (critical damping). The controller requires exact knowledge of the model including the payload~\cite{carloni2026}, which E1 tests directly.
+
+\subsection{Cartesian impedance control (model-based, contact)}
+With the work-space inertia $\hat{\bM}_x=(\bJ\hat{\bM}^{-1}\bJ^T)^{-1}$, the impedance controller of the course~\cite{carloni2026} linearises the work-space dynamics and imposes the target behaviour $\bM_d\ddot{\be}_x+\bK_d\dot{\be}_x+\bK_p\be_x=\bF_c$ (up to the sign convention of $\bF_c$). In general this requires measuring $\bF_c$. We use the case $\bM_d=\hat{\bM}_x$, i.e.\ the robot keeps its natural apparent inertia, for which the force feedback cancels and no force sensor is needed~\cite{khatib1987,ott2008}:
+\begin{equation}
+\begin{split}
+\btau = {}&\bJ^T\!\big[\hat{\bM}_x(\ddot{\bx}_d-\dot{\bJ}\dq) + \bD_x\dot{\be}_x + \bK_x\be_x\big]\\
+&+ \hat{\bc}(\bq,\dq) + \hat{\bg}(\bq),
+\end{split}
+\label{eq:imp}
+\end{equation}
+giving the closed loop $\hat{\bM}_x\ddot{\be}_x+\bD_x\dot{\be}_x+\bK_x\be_x=-\bF_c$. Here $\bJ$ is the geometric Jacobian of the peg tip, $\be_x=[\boldsymbol{p}_d-\boldsymbol{p};\,\be_O]$ with the quaternion orientation error $\be_O$ of~\cite[Eq.~3.91]{siciliano2009}, and $\dot{\bJ}\dq$ is computed by a directional finite difference. The damping is set per axis as $D_{x,ii}=2\zeta\sqrt{K_{x,ii}\hat{M}_{x,ii}}$, with $\zeta=1$.
+
+Following the guidelines in~\cite{carloni2026}, i.e.\ low stiffness in directions where contact and position uncertainty are expected, we use $\bK_x=\mathrm{diag}(300,300,1000\,\mathrm{N/m};\ 15,15,15\,\mathrm{Nm/rad})$. The insertion strategy uses only the \emph{nominal} hole position. In 1\,s the set-point moves along a quintic profile to above the nominal hole; it then descends at 2\,cm/s to 10\,mm below the nominal hole bottom. The vertical force therefore builds up as $K_z$ times the set-point penetration, and the lateral compliance lets the chamfer guide the peg into the true hole. A \emph{stiff} variant, with $8000$\,N/m translational stiffness and $(150,150,40)$\,Nm/rad rotational stiffness (the yaw value is limited by the wrist-3 inertia), serves as a model-based position-control baseline.
+
+\subsection{Lagrangian neural network (model-free, free motion)}
+Following~\cite{lutter2019delan,lutter2023,liu2024}, the Lagrangian is $\mathcal{L}=\frac12\dq^T\bM_\theta(\bq)\dq-V_\theta(\bq)$. Here $\bM_\theta=\boldsymbol{L}_\theta\boldsymbol{L}_\theta^T+\epsilon\boldsymbol{I}$, where $\boldsymbol{L}_\theta$ is a lower-triangular matrix with softplus diagonal output by a multilayer perceptron (MLP), and $V_\theta$ is a scalar MLP. A third network gives a positive semi-definite damping matrix $\bD_\theta=\boldsymbol{L}_D\boldsymbol{L}_D^T$~\cite{liu2024}. The Euler--Lagrange equations give the learned dynamics
+\begin{equation}
+\bM_\theta\ddq + \bc_\theta + \bg_\theta + \bD_\theta\dq = \btau,
+\label{eq:lnn}
+\end{equation}
+with $\bc_\theta=\dot{\bM}_\theta\dq-\frac12\partial_{\bq}(\dq^T\bM_\theta\dq)$ and $\bg_\theta=\partial V_\theta/\partial\bq$, all obtained by automatic differentiation. Because the UR7e is fully actuated and torque driven, the input-matrix network of~\cite{liu2024} is replaced by the identity. The networks take $[\sin\bq,\cos\bq]$ as input and have two hidden layers of 128 softplus units; $\epsilon=10^{-5}$.
+
+\emph{Training.} As in~\cite{liu2024}, \eqref{eq:lnn} is integrated over one sample period with RK4 under zero-order-hold torque, and the predicted next state is compared with the measured one. Accelerations are never differentiated numerically. PyBullet integrates with semi-implicit Euler, so the logged position increments differ from an RK4 prediction by $\approx\ddq\Delta t^2/2$, which is the same order as the information in the position term. We therefore use only the velocity term, normalised per joint by $\Delta t$ and the acceleration standard deviation $\sigma_i$:
+\begin{equation}
+\ell(\theta)=\frac{1}{|\mathcal{D}|}\sum_{k\in\mathcal{D}}\sum_{i=1}^{6}\Big(\frac{\hat{\dot q}_{i,k+1}-\dot q_{i,k+1}}{\Delta t\,\sigma_i}\Big)^2.
+\end{equation}
+Training data follow~\cite{liu2024}: the robot tracks 70 random multi-sine joint references (three harmonics per joint, 0.05--0.5\,Hz, 20\,s each, links kept 8\,cm above the floor) with the model-free PD controller of Sec.~\ref{sec:system} plus integral action, and $(\bq,\dq,\btau)$ is logged at 1\,kHz. Sixty trajectories are used for training (every fifth sample, 240k transitions) and ten for validation. We train with AdamW (one-cycle learning rate up to $10^{-3}$, batch 1024) for 200 epochs, about 1\,h on one A100 GPU, and keep the checkpoint with the lowest validation loss.
+
+\emph{Controller.} The learned model is used in the tracking law of~\cite[Eq.~25]{liu2024} with $A_L=I$:
+\begin{equation}
+\begin{split}
+\btau = {}&\bM_\theta(\bq_r)\ddq_r + \bc_\theta(\bq_r,\dq_r) + \bD_\theta(\bq_r)\dq_r\\
+&+ \bg_\theta(\bq_r) + \bK_P\tilde{\bq} + \bK_D\dot{\tilde{\bq}},
+\end{split}
+\label{eq:liu}
+\end{equation}
+with $\tilde{\bq}=\bq_r-\bq$. Since all model terms are evaluated on the reference, the feed-forward is computed once per trajectory in a batch. The gains $\bK_P,\bK_D$ are \emph{the same} as those of the PD baseline, so any improvement over PD is due to the learned model.
+
+\subsection{PPO peg-in-hole policy (model-free, contact)}
+The task is formulated as a Markov decision process and solved with PPO~\cite{schulman2017}, which Shahid~\emph{et al.}~\cite{shahid2022} applied to continuous-action robotic manipulation, using the Stable-Baselines3 implementation~\cite{raffin2021}.
+\begin{itemize}
+\item \emph{Action} (20\,Hz): $\boldsymbol{a}\in[-1,1]^3$ moves a virtual peg-tip target by $2\boldsymbol{a}$\,mm, clipped to a $\pm12$\,mm box around the nominal hole. The target is converted to joint set-points by damped-least-squares IK, with the peg kept vertical. These set-points are tracked at 1\,kHz by a stiff joint PID servo ($K_I=10K_P$). Only kinematics is used; no dynamics model.
+\item \emph{Observation} (18-D): peg-tip position relative to the nominal hole, tip velocity, the wrist force/torque reading (bias removed at reset), the deflection between the virtual target and the tip, and the previous action.
+\item \emph{Reward}: $-\|\boldsymbol{p}-\boldsymbol{p}^*\|/3\,\mathrm{cm}$, minus a penalty on contact forces above 30\,N, minus an action-smoothness penalty, plus a success bonus of $50+10(1-k/K)$, where $k$ is the current step and $K=200$ the episode length. An episode is aborted with $-20$ when the contact force exceeds 150\,N, and lasts at most 10\,s.
+\item \emph{Domain randomisation}: hole error radius $\sim\mathcal{U}(0,5)$\,mm in a random direction, friction $\sim\mathcal{U}(0.3,0.8)$, start pose 15--35\,mm above the hole with $\pm3$\,mm lateral jitter.
+\end{itemize}
+PPO uses $2\times256$ policy and value networks, 16 parallel environments with rollouts of 512 steps, batch 512, 10 epochs per update, learning rate $3\cdot10^{-4}$, $\gamma=0.99$, $\lambda_{\mathrm{GAE}}=0.95$ and clip range 0.2. It was trained for $3\cdot10^6$ steps with three seeds, each taking about 3\,h on 16 CPU cores.
+
+\subsection{Baselines}
+Three baselines isolate what each method adds: (i)~\emph{PD} with the gains of Sec.~\ref{sec:system} (no model) for E1; (ii)~\emph{stiff impedance} (model-based position control) and (iii)~\emph{scripted PID}, which moves the virtual target along the same path as the impedance set-point through the PPO servo (model-free, no learning), for E2.
+
+% =====================================================================================
+\section{Experimental Design}\label{sec:design}
+
+\subsection{E1: free-motion trajectory tracking}
+Three reference trajectories, none of which were used for training:
+\begin{itemize}
+\item \emph{pick\_place}: quintic rest-to-rest segments (1\,s each) through six task-space waypoints converted to joint space by IK;
+\item \emph{sine\_in\_dist}: a 20\,s multi-sine drawn from the LNN training distribution (0.05--0.5\,Hz);
+\item \emph{sine\_fast}: a 20\,s multi-sine at 0.5--1\,Hz, outside the training distribution.
+\end{itemize}
+Each trajectory is run in two conditions: \emph{nominal}, and \emph{payload}, where a 2\,kg mass is attached 5\,cm below \texttt{tool0}. The payload is absent from both the computed-torque model and the LNN training data. The metrics are the end-effector (EE) position RMSE and maximum error, the joint RMSE, and torque saturation. Since the simulation is deterministic, one run per combination suffices.
+
+\subsection{E2: peg-in-hole under hole-position uncertainty}
+A 20\,mm square peg (80\,mm long, 0.1\,kg) is rigidly attached to \texttt{tool0}. The hole is 30\,mm deep, with 0.5\,mm clearance per side and a $45^\circ$ chamfer 4\,mm wide. Every controller knows only the \emph{nominal} hole position, while the true hole is displaced by $r\in\{0,1,\dots,6\}$\,mm in a random direction, modelling calibration or perception error. For each $r$ there are 30 trials, and trial $i$ uses a fixed seed that determines the error direction and the start pose, so all controllers face identical scenes. Friction is fixed at 0.5.
+
+A trial succeeds when the peg tip is within 5\,mm of the hole bottom (at least 25\,mm inserted) within 10\,s. We report the success rate, the median peak contact force (contact-solver ground truth, sampled at 1\,kHz) and the insertion time. PPO uses $r\le5$\,mm during training, so $r=6$\,mm tests extrapolation. The PPO and scripted-PID episodes inherit the 150\,N safety abort of the environment, whereas the impedance runs do not.
+% \todo{either state this as is, or count impedance trials with peak force >150 N as failures for a uniform protocol}
+
+% =====================================================================================
+\section{Results}\label{sec:results}
+
+\subsection{Learned dynamics model}
+Fig.~\ref{fig:lnn} shows the LNN training and the quality of the learned model on the held-out trajectories. For the shoulder and elbow joints, which carry the arm's weight, the learned gravity torque $\partial V_\theta/\partial q_i$ has an RMSE of 0.40\,Nm and 0.33\,Nm against a variation (standard deviation) of 5.5\,Nm and 1.6\,Nm. The inverse dynamics~\eqref{eq:lnn} predicts the measured torque with an RMSE of 0.33\,Nm and 0.27\,Nm. The learned mass matrix has a median relative Frobenius error of 8.4\% with respect to the true one, and the diagonal entries of joints 1--3 are within 1.3--8.3\%.
+
+The wrist inertias are poorly identified: their errors are 31\% and 78\% for wrists 1 and 2, and roughly a factor of 50 for wrist 3. The reason is the data rather than the model. The excitation produced wrist torques below 0.5\,Nm, and essentially zero torque on wrist 3, so the data contain little information about these terms. The validation loss levels off after about 50 epochs at roughly three times the final training loss (0.39 vs.\ 0.12), indicating mild overfitting to the 60 training trajectories. Keeping the best-validation checkpoint avoids its effect.
+
+\begin{figure*}[t]
+\centering
+\fig{lnn_model_quality}{\textwidth}
+\caption{LNN model quality. Left: normalised next-state loss. Centre: learned vs.\ true gravity torque for joints 1--3 on held-out data. Right: LNN inverse-dynamics torque vs.\ measured torque.}
+\label{fig:lnn}
+\end{figure*}
+
+\subsection{E1: free motion}
+Table~\ref{tab:e1} and Fig.~\ref{fig:e1} summarise the tracking results; no torque saturation occurred.
+
+\emph{Nominal model.} Computed torque tracks all trajectories with an EE RMSE below 0.1\,mm, the expected result for an exact model. The LNN controller reaches 0.15--0.93\,mm while never accessing the URDF. With gains identical to PD (26--30\,mm), this is a 30--170-fold improvement that is entirely due to the learned feed-forward. On the out-of-distribution trajectory \emph{sine\_fast} its error grows about sixfold relative to \emph{sine\_in\_dist} (0.93 vs.\ 0.15\,mm, with a maximum of 3.6\,mm), while computed torque is barely affected. Learned models are only reliable where data were collected.
+
+\emph{Unmodelled payload.} The 2\,kg payload removes most of the advantage of both models. The computed-torque error rises from below 0.1\,mm to 14--20\,mm, and the LNN error to 14--17\,mm, both still well below PD (39--44\,mm). Under model error, the LNN controller even obtains a lower joint RMSE (0.014--0.021 vs.\ 0.036--0.064\,rad). The reason is the feedback rather than the model. The computed-torque gains act through $\hat{\bM}$, so the light wrist joints receive a very low effective stiffness ($\hat{M}_{ii}\omega^2$), whereas \eqref{eq:liu} uses fixed torque-level gains. Once the model is wrong, the comparison is therefore governed by the feedback design rather than by model quality.
+
+\begin{table}[t]
+\caption{E1: end-effector RMSE (max) in mm}
+\label{tab:e1}
+\centering\footnotesize
+\setlength{\tabcolsep}{2pt}
+\begin{tabular}{llrrr}
+\toprule
+Trajectory & Cond. & PD & LNN (MF) & CT (MB) \\
+\midrule
+pick\_place  & nominal & 29.80 (39.4) & 0.47 (1.55) & 0.04 (0.11) \\
+sine\_in\_dist & nominal & 26.34 (31.9) & 0.15 (0.38) & 0.01 (0.03) \\
+sine\_fast   & nominal & 28.18 (39.3) & 0.93 (3.59) & 0.09 (0.20) \\
+\midrule
+pick\_place  & payload & 43.83 (56.6) & 15.47 (19.9) & 14.83 (22.7) \\
+sine\_in\_dist & payload & 38.94 (48.9) & 13.86 (18.6) & 13.84 (20.5) \\
+sine\_fast   & payload & 43.79 (58.1) & 17.11 (19.7) & 20.31 (31.7) \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{figure}[t]
+\centering
+\fig{e1_rmse_bars}{\columnwidth}
+\caption{E1: end-effector RMSE (log scale) per trajectory, nominal model (left) and unmodelled 2\,kg payload (right).}
+\label{fig:e1}
+\end{figure}
+
+\subsection{PPO training}
+The deterministic evaluation success rate, measured every $10^5$ steps on 20 episodes, rose from 20\% after $10^5$ steps to 75\% after $8\cdot10^5$ steps. It then remained between 80 and 100\%, and the final three evaluations reached 100\%, with a mean episode length of 28.8 steps (1.4\,s). Training took $3.0$\,h for $3\cdot10^6$ steps on 16 CPU cores (about 300 steps/s).
+% \todo{report the spread over seeds 0-2 and, if space allows, add ppo_learning_curve.pdf}
+
+\subsection{E2: peg-in-hole}
+Table~\ref{tab:e2} and Fig.~\ref{fig:e2} show the results of the 840 trials.
+
+\emph{Compliance.} Cartesian impedance control inserts the peg in 97--100\% of trials for errors up to 4\,mm. It also exerts the lowest peak forces (46--53\,N, and no contact at all at 0\,mm). The stiff variant, with the same law and model, needs 2--6 times larger forces (109--335\,N) and its success rate declines steadily with the error. The scripted PID (model-free position control) succeeds only at 0\,mm and fails at 1\,mm already, at about 170\,N. Without compliance or learning, even a 1\,mm error cannot be absorbed despite the 4\,mm chamfer.
+
+\emph{Capture range.} Impedance success drops abruptly to 27\% at 5\,mm and 17\% at 6\,mm. This is a geometric limit, not a control failure. The peg reaches the chamfer only if the error along each hole axis is below about $c+\text{clearance}=4.5$\,mm, so beyond 4.5\,mm only near-diagonal error directions remain inside the capture region. Passive compliance corrects errors only within this region, and the impedance strategy contains no search.
+
+\emph{Learning.} PPO succeeds in 100\% of trials up to 4\,mm and, unlike impedance control, still in 70\% at 5\,mm and 53\% at 6\,mm, the latter outside its training range. Since the chamfer alone cannot capture these cases, the policy must use the observed wrench and deflection to relocate the peg actively. The price is force: PPO touches the fixture even at 0\,mm error, with median peak forces of 68--79\,N up to 4\,mm, versus 46--53\,N for impedance control. Because it never knows the true hole position, it appears to locate the hole by contact.
+% \todo{confirm the search behaviour visually (--gui) and give one sentence describing it}
+
+\begin{table}[t]
+\caption{E2: success rate [\%] / median peak force [N] vs.\ hole-position error}
+\label{tab:e2}
+\centering\scriptsize
+\setlength{\tabcolsep}{2.4pt}
+\begin{tabular}{lccccccc}
+\toprule
+Controller & 0\,mm & 1\,mm & 2\,mm & 3\,mm & 4\,mm & 5\,mm & 6\,mm \\
+\midrule
+Impedance (MB)      & 100/0   & 100/47  & 97/46  & 100/46 & 100/53 & 27/83  & 17/85 \\
+Stiff imp. (MB)     & 100/109 & 93/130  & 90/126 & 83/171 & 70/221 & 43/331 & 27/335 \\
+Scripted PID (MF)   & 100/0   & 17/173  & 23/162 & 10/167 & 0/171  & 0/169  & 0/171 \\
+PPO (MF)            & 100/78  & 100/68  & 100/79 & 100/75 & 100/73 & 70/114 & 53/144 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{figure*}[t]
+\centering
+\fig{e2_summary}{\textwidth}
+\caption{E2 (30 trials per error): success rate, median peak contact force (log scale) and median insertion time vs.\ hole-position error.}
+\label{fig:e2}
+\end{figure*}
+
+\begin{figure}[t]
+\centering
+\fig{e2_example_profiles}{\columnwidth}
+\caption{E2 example at 3\,mm error (same scene for all controllers): contact force and peg-tip depth below the hole top.}
+\label{fig:e2ex}
+\end{figure}
+
+% =====================================================================================
+\section{Discussion}
+\emph{What the model buys.} In free motion, an exact model is unbeatable: computed torque is an order of magnitude more accurate than the LNN and two orders more accurate than PD, at negligible computational cost and with no data. The LNN closes most of the gap to computed torque using only 23 minutes of logged motion and an hour of GPU training, and its structure makes the learned terms interpretable (Fig.~\ref{fig:lnn}). Its weaknesses are the usual ones of learned models: poor identification of weakly excited dynamics (the wrist) and degradation outside the training distribution. Neither approach is robust to a change of the system that is absent from both the model and the data, such as the payload. Robust or adaptive control~\cite{carloni2026}, or online re-training of the LNN, would be needed.
+
+\emph{What learning buys in contact.} The impedance controller needs no training, behaves predictably and applies the least force, but its success is bounded by the geometry it relies on. The PPO policy discovered a more capable strategy from reward alone and extrapolates beyond its training range. However, it requires about 3 CPU-hours per seed, exerts larger forces, and offers no stability or force guarantees. A natural hybrid would let a learned policy command the set-point of the impedance controller, combining compliant low-level behaviour with learned search.
+
+\emph{Limitations.} All results are in simulation without sensor noise, contact stiffness uncertainty or actuator dynamics. The PPO results in Table~\ref{tab:e2} are for a single seed. The impedance runs are not subject to the 150\,N abort used for the PPO and scripted-PID runs, so the stiff-impedance success rates are optimistic. Finally, the comparison under model error depends on the chosen feedback gains.
+% \todo{replace "a single seed" with mean +- spread once seeds 1 and 2 are evaluated}
+
+% =====================================================================================
+\section{Conclusion}
+We implemented and compared model-based and model-free controllers for a simulated UR7e in free motion and in contact. With an exact model, computed torque is the most accurate free-motion controller; a physics-informed Lagrangian network learned from 70 trajectories approaches it to within a millimetre without any access to the model, but shares its sensitivity to unmodelled payloads. In peg-in-hole insertion, Cartesian impedance control is the gentlest and most reliable method within the geometric capture range of the chamfer, while a PPO policy is the only controller that succeeds reliably beyond it. The choice between the paradigms is therefore a trade-off between guarantees, force and data on the one hand, and robustness to unmodelled uncertainty on the other.
+
+\bibliographystyle{IEEEtran}
+\bibliography{references}
+
+\end{document}
