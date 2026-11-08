@@ -52,16 +52,18 @@ def main():
     args.out.mkdir(parents=True, exist_ok=True)
     (args.out / "logs").mkdir(exist_ok=True)
 
-    env = PegInHoleEnv(gui=args.gui)   # plant first (pybullet client 0)
-    env.plant.slowmo = args.slowmo
-    model = RigidBodyModel(tool="peg", link_mass_scale=args.model_mass_scale)
-
+    # load the policy (PyTorch) before any PyBullet window exists: importing torch after the
+    # GUI's software OpenGL context has been created can crash under WSL
     policy = None
     if "ppo" in args.controllers:
         if not args.ppo_model.exists():
             sys.exit(f"PPO model {args.ppo_model} not found (train_ppo.py) -- or drop 'ppo' from --controllers")
         from stable_baselines3 import PPO
         policy = PPO.load(args.ppo_model, device="cpu")
+
+    env = PegInHoleEnv(gui=args.gui)   # plant first (pybullet client 0)
+    env.plant.slowmo = args.slowmo
+    model = RigidBodyModel(tool="peg", link_mass_scale=args.model_mass_scale)
 
     jobs = [(oi, r, i) for oi, r in enumerate(args.offsets) for i in range(args.trials)]
     jobs = jobs[args.shard::args.n_shards]
